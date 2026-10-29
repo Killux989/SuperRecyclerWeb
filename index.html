@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recycling Leaderboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #12161c; --card: #1b222b; --row: #222b36; --row-alt: #1e2630; --line: #2e3946;
+    --text: #e6ebf0; --muted: #8d9aa8; --gold: #ff9a0d; --green: #4dff73; --blue: #73ccff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 Inter, system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font: 700 40px/1.1 Fredoka, sans-serif; text-align: center; margin: 0 0 4px; letter-spacing: 1px; }
+  .sub { text-align: center; color: var(--muted); margin: 0 0 24px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: center; margin-bottom: 16px; }
+  select, input { background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; font: inherit; }
+  input { min-width: 200px; }
+  .card { background: var(--card); border-radius: 10px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; padding: 12px; border-bottom: 1px solid var(--line); }
+  td { padding: 10px 12px; }
+  tbody tr:nth-child(odd) { background: var(--row); }
+  tbody tr:nth-child(even) { background: var(--row-alt); }
+  .rank { font: 700 18px Fredoka, sans-serif; width: 64px; }
+  .top1 .rank { color: var(--gold); } .top2 .rank { color: #d9dee4; } .top3 .rank { color: #d08a4e; }
+  .grade { font: 700 18px Fredoka, sans-serif; color: var(--green); }
+  .stars { color: var(--gold); letter-spacing: 2px; white-space: nowrap; }
+  .num { font-variant-numeric: tabular-nums; }
+  .date { color: var(--muted); font-size: 13px; }
+  .status { text-align: center; color: var(--muted); padding: 32px 12px; }
+  .pager { display: flex; gap: 12px; justify-content: center; align-items: center; margin-top: 16px; color: var(--muted); }
+  button { background: var(--row); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 24px; }
+  @media (max-width: 640px) { .hide-sm { display: none; } td, th { padding: 8px 6px; } h1 { font-size: 30px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>RECYCLING LEADERBOARD</h1>
+  <p class="sub">Every round ever played. Ranked by stars, then accuracy, then time.</p>
+
+  <div class="controls">
+    <select id="level" aria-label="Level"></select>
+    <input id="search" type="search" placeholder="Find a player..." aria-label="Find a player">
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Player</th><th>Grade</th><th>Stars</th><th>Accuracy</th><th>Time</th><th class="hide-sm">Played</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="status" class="status">Loading scores...</div>
+  </div>
+
+  <div class="pager">
+    <button id="prev">Prev</button><span id="page"></span><button id="next">Next</button>
+  </div>
+  <footer>Updates every 30 seconds.</footer>
+</main>
+
+<script>
+// The publishable key is meant to be public: the database only allows reading and adding scores.
+const SUPABASE_URL = "https://xtxihpujyjilogpassyt.supabase.co";
+const SUPABASE_KEY = "sb_publishable_fNzvaHCdg4eNVDwTDU8FNQ_Z6twpzll";
+const LEVELS = ["Lvl_House"]; // same list as WBP_Leaderboard's Levels
+const PAGE_SIZE = 25;
+
+const $ = id => document.getElementById(id);
+let scores = [], page = 0;
+
+for (const lvl of LEVELS) {
+  const opt = document.createElement("option");
+  opt.value = lvl;
+  opt.textContent = lvl.replace(/^Lvl_/, "").toUpperCase();
+  $("level").append(opt);
+}
+
+function formatTime(sec) { // matches Unreal's Time Seconds To String: mm:ss.cc
+  const m = Math.floor(sec / 60), s = sec - m * 60;
+  return String(m).padStart(2, "0") + ":" + s.toFixed(2).padStart(5, "0");
+}
+
+async function load() {
+  // shortcut: fetches up to 1000 rows per level and ranks/filters in the browser; switch to server paging past that
+  const url = SUPABASE_URL + "/rest/v1/scores?select=player_name,grade,accuracy,stars,time_seconds,created_at"
+    + "&level_id=eq." + encodeURIComponent($("level").value)
+    + "&order=stars.desc,accuracy.desc,time_seconds.asc,created_at.asc&limit=1000";
+  try {
+    const res = await fetch(url, { headers: { apikey: SUPABASE_KEY } });
+    if (!res.ok) throw new Error((await res.json()).message || res.status);
+    scores = (await res.json()).map((s, i) => ({ ...s, rank: i + 1 }));
+    render();
+  } catch (e) {
+    $("rows").replaceChildren();
+    $("status").textContent = "Can't reach the leaderboard right now (" + e.message + ").";
+    $("status").hidden = false;
+  }
+}
+
+function render() {
+  const q = $("search").value.trim().toLowerCase();
+  const list = q ? scores.filter(s => s.player_name.toLowerCase().includes(q)) : scores;
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  page = Math.min(page, pages - 1);
+
+  const rows = list.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(s => {
+    const tr = document.createElement("tr");
+    if (s.rank <= 3) tr.className = "top" + s.rank;
+    const cells = [
+      ["rank", "#" + s.rank],
+      ["", s.player_name], // textContent below, so names can't inject HTML
+      ["grade", s.grade],
+      ["stars", "★".repeat(s.stars) + "☆".repeat(3 - s.stars)],
+      ["num", s.accuracy.toFixed(1) + "%"],
+      ["num", formatTime(s.time_seconds)],
+      ["date hide-sm", new Date(s.created_at).toLocaleDateString()],
+    ];
+    for (const [cls, text] of cells) {
+      const td = document.createElement("td");
+      td.className = cls;
+      td.textContent = text;
+      tr.append(td);
+    }
+    return tr;
+  });
+
+  $("rows").replaceChildren(...rows);
+  $("status").hidden = rows.length > 0;
+  $("status").textContent = q ? "No players match \"" + $("search").value.trim() + "\"." : "No scores yet - go play!";
+  $("page").textContent = "Page " + (page + 1) + " of " + pages;
+  $("prev").disabled = page === 0;
+  $("next").disabled = page >= pages - 1;
+}
+
+$("level").addEventListener("change", () => { page = 0; load(); });
+$("search").addEventListener("input", () => { page = 0; render(); });
+$("prev").addEventListener("click", () => { page--; render(); });
+$("next").addEventListener("click", () => { page++; render(); });
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
